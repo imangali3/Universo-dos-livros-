@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Скелетный детектор</title>
+<style>
+  body {margin:0;background:#000;color:#fff;font-family:sans-serif;overflow:hidden}
+  video,canvas {position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+  #status {position:absolute;top:10px;left:10px;font-size:20px;background:rgba(0,0,0,0.6);padding:10px;border-radius:8px}
+  #siren {position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.4);opacity:0;pointer-events:none;transition:opacity 0.2s}
+  #siren.active {opacity:1;animation:flash 0.3s linear infinite}
+  @keyframes flash {0%{opacity:0.2}50%{opacity:0.7}100%{opacity:0.2}}
+</style>
+</head>
+<body>
+<div id="status">Загрузка...</div>
+<div id="siren"></div>
+<video id="video" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+<audio id="alarm" src="ppp.mp3" preload="auto"></audio>
+
+<!-- TensorFlow.js и MoveNet -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection/dist/movenet.js"></script>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const sirenEl = document.getElementById('siren');
+const alarm = document.getElementById('alarm');
+
+let detector, lastPose = null;
+const MOVE_THRESHOLD = 15; // пиксели движения
+
+async function initCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: {facingMode: 'environment'}, audio: false });
+  video.srcObject = stream;
+  return new Promise(res => video.onloadedmetadata = res);
+}
+
+function isMoving(curr, prev) {
+  if (!prev) return false;
+  let moved = false;
+  for (let i=0; i<curr.keypoints.length; i++) {
+    const a = curr.keypoints[i], b = prev.keypoints[i];
+    if (a.score>0.4 && b.score>0.4) {
+      const dx = Math.abs(a.x - b.x);
+      const dy = Math.abs(a.y - b.y);
+      if (dx>MOVE_THRESHOLD || dy>MOVE_THRESHOLD) { moved = true; break; }
+    }
+  }
+  return moved;
+}
+
+function drawPose(pose) {
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#00ff88';
+  for (const kp of pose.keypoints) {
+    if (kp.score > 0.4) {
+      ctx.beginPath();
+      ctx.arc(kp.x, kp.y, 5, 0, Math.PI*2);
+      ctx.fillStyle = '#00ff88';
+      ctx.fill();
+    }
+  }
+}
+
+async function loop() {
+  const poses = await detector.estimatePoses(video);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  if (poses.length > 0) {
+    const pose = poses[0];
+    drawPose(pose);
+    if (isMoving(pose, lastPose)) {
+      triggerAlarm();
+      return;
+    }
+    lastPose = pose;
+    statusEl.textContent = 'Человек найден. Ждем движения...';
+  } else {
+    statusEl.textContent = 'Ищем человека...';
+    lastPose = null;
+  }
+  requestAnimationFrame(loop);
+}
+
+function triggerAlarm() {
+  statusEl.textContent = 'Движение! Сирена!';
+  sirenEl.classList.add('active');
+  alarm.play().catch(()=>{});
+  setTimeout(()=>location.reload(), 5000);
+}
+
+(async () => {
+  await initCamera();
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  statusEl.textContent = 'Загружаем модель...';
+  detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+    modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+  });
+  statusEl.textContent = 'Запущено. Ищем человека...';
+  loop();
+})();
+</script>
+</body>
+</html>
